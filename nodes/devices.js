@@ -33,6 +33,10 @@ module.exports = function(RED) {
       var ImportedHumidList = MIIOdevtypesVocabulary.humid_list();
       res.json(ImportedHumidList);
     });
+    RED.httpAdmin.get(NODE_PATH + 'getKettleList/', function (req, res) {
+      var ImportedKettleList = MIIOdevtypesVocabulary.kettle_list();
+      res.json(ImportedKettleList);
+    });
     RED.httpAdmin.get(NODE_PATH + 'getPurifList/', function (req, res) {
       var ImportedPurifList = MIIOdevtypesVocabulary.purif_list();
       res.json(ImportedPurifList);
