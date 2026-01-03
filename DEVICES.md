@@ -375,6 +375,17 @@
         <td align="center">&#9989;</td>
         <td align="center">&#9989;</td>
       </tr>
+      <tr>
+        <td>8</td>
+        <td>xiaomi.kettle.v20</td>
+        <td>Xiaomi Kettle (v20)</td>
+        <td></td>
+        <td><ul><li>⏻ Power</li><li>℃ Target Temperature</li><li>℃ Keep Warm Temperature</li><li>🕐 Keep Warm Time (minutes)</li><li>♨ Auto Keep Warm</li><li>⚙ Target Mode</li><li>☾ No Disturb</li><li>⚙ Custom Knob Temp</li><li>⚙ Lift Remember Temp</li><li>♪ Boiling Reminder</li><li>♪ Keep Warm Reminder</li><li>◼ Stop Work</li></ul></td>
+        <td><ul><li>true / false</li><li>40 - 99</li><li>0 - 100</li><li>60 - 1440</li><li>true / false</li><li>0 - 128</li><li>true / false</li><li>true / false</li><li>true / false</li><li>true / false</li><li>true / false</li><li>any (payload ignored)</li></ul></td>
+        <td>{ Power, TargetTemperature, KeepWarmTemperature, KeepWarmTime, AutoKeepWarm, TargetMode, NoDisturb, CustomKnobTemp, LiftRememberTemp, BoilingReminder, KeepWarmReminder, StopWork }</td>
+        <td align="center">&#10060;</td>
+        <td align="center">&#9989;</td>
+      </tr>
     </tbody>
   </table>
 

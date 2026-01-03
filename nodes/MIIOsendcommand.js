@@ -39,22 +39,21 @@ module.exports = function(RED) {
         // A.1) sending data to config-node
         SingleCMD = node.config.command;
         SinglePayload = msg.payload;
+
+        // A.2) getting errors from config-node + sending them only once
+        node.MIdevice.once('onSingleCMDSentError', (SingleCMDErrorMsg, SingleCMDErrorCube) => {
+          if (SingleCMDErrorCube === node.config.command) {
+            node.warn(`Mihome Exception. IP: ${node.MIdevice.address} -> ${SingleCMDErrorMsg}`);
+            node.status({fill:"red",shape:"ring",text:"Command: error"});
+          }
+        });
+
         node.MIdevice.emit('onSingleCommand', SingleCMD, SinglePayload);
-        // A.2) starting msg and status
+        // A.3) starting msg and status
         node.status({fill:"green",shape:"dot",text:"Command: sent"});
         msg.payload = {[SingleCMD]: SinglePayload};
         node.send(msg);
-        // A.3) check for not multiplying error warns
-        ErrorSingleCMDRepeatCheck = 0;
-        // A.4) getting errors from config-node + sending them only once
-        node.MIdevice.on('onSingleCMDSentError', (SingleCMDErrorMsg, SingleCMDErrorCube) => {
-          if (SingleCMDErrorCube === node.config.command && ErrorSingleCMDRepeatCheck == 0) {
-            node.warn(`Mihome Exception. IP: ${node.MIdevice.address} -> ${SingleCMDErrorMsg}`);
-            node.status({fill:"red",shape:"ring",text:"Command: error"});
-            ErrorSingleCMDRepeatCheck++;
-          };
-        });
-        // A.5) cleaning status after 5 sec timeout
+        // A.4) cleaning status after 5 sec timeout
         setTimeout(() => {
           node.status({});
         }, 5000);
@@ -63,22 +62,25 @@ module.exports = function(RED) {
       function SendCustomJsonCMD () {
         // B.1) sending data to config-node
         CustomJsonCMD = msg.payload;
+
+        if (!CustomJsonCMD || typeof CustomJsonCMD !== 'object' || Array.isArray(CustomJsonCMD)) {
+          node.warn('Custom JSON command expects msg.payload to be an object like {"KeepWarmTemperature": 65}');
+          node.status({fill:"red",shape:"ring",text:"Command: error"});
+          return;
+        }
+
+        // B.2) getting errors from config-node + sending them only once
+        node.MIdevice.once('onJsonCMDSentError', (JsonCMDErrorMsg, JsonCMDErrorCube) => {
+          node.warn(`Mihome Exception. IP: ${node.MIdevice.address} -> ${JsonCMDErrorMsg}`);
+          node.status({fill:"red",shape:"ring",text:"Command: error"});
+        });
+
         node.MIdevice.emit('onJsonCommand', CustomJsonCMD);
-        // B.2) starting msg and status
+        // B.3) starting msg and status
         node.status({fill:"green",shape:"dot",text:"Command: sent"});
         msg.payload = CustomJsonCMD;
         node.send(msg);
-        // B.3) check for not multiplying error warns
-        ErrorJsonCMDRepeatCheck = 0;
-        // B.4) getting errors from config-node + sending them only once
-        node.MIdevice.on('onJsonCMDSentError', (JsonCMDErrorMsg, JsonCMDErrorCube) => {
-          if (JsonCMDErrorCube === node.config.command && ErrorJsonCMDRepeatCheck == 0) {
-            node.warn(`Mihome Exception. IP: ${node.MIdevice.address} -> ${JsonCMDErrorMsg}`);
-            node.status({fill:"red",shape:"ring",text:"Command: error"});
-            ErrorJsonCMDRepeatCheck++;
-          };
-        });
-        // B.5) cleaning status after 15 sec timeout
+        // B.4) cleaning status after 15 sec timeout
         setTimeout(() => {
           node.status({});
         }, 15000);

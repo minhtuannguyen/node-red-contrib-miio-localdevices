@@ -2,6 +2,10 @@ const MIIOcommandsVocabulary = require('../lib/commandsLib.js');
 const MIIOdevtypesVocabulary = require('../lib/devtypesLib.js');
 const EventEmitter = require('events');
 const mihome = require('node-mihome');
+const registerMiHomeModels = require('../lib/registerMiHomeModels');
+
+// Ensure device definitions under `defFiles/` are usable by node-mihome.
+registerMiHomeModels(mihome);
 
 module.exports = function(RED) {
   function MIIOdevicesNode(n) {
@@ -68,6 +72,34 @@ module.exports = function(RED) {
       token: node.token,
   });
 
+    // Serialize all operations that touch the shared `device` instance.
+    // Polling (`ConnDevice`) and Send Command handlers can otherwise overlap,
+    // leading to a poll cycle calling `device.destroy()` while a command is in-flight.
+    let deviceOp = Promise.resolve();
+    function enqueueDeviceOp(fn) {
+      deviceOp = deviceOp.then(fn, fn);
+      return deviceOp;
+    }
+
+    // Attach the properties listener once.
+    // Previously this was done inside `ConnDevice()` which runs repeatedly,
+    // causing MaxListenersExceededWarning and growing memory usage.
+    device.on('properties', (data) => {
+      NewData = data;
+      // check for any changes in properties
+      for (var key in NewData) {
+        var value = NewData[key];
+        if (key in OldData) {
+          if (OldData[key] !== value) {
+            node.emit('onChange', data);
+            OldData = data;
+          }
+        }
+      }
+      // case with no changes in properties
+      OldData = data;
+    });
+
     // 3) Defining auto-polling variables
     Poll_or_Not = node.isPolling;
     if (node.pollinginterval == null) {Polling_Interval = 30} 
@@ -123,70 +155,77 @@ module.exports = function(RED) {
     };
     // D) Main Function - Polling the device
     async function ConnDevice () {
-      try {
-        // D.1) connect to device and poll for properties 
-        await device.on('properties', (data) => {
-          NewData = data;
-          // D.1.1) check for any changes in properties
-          for (var key in NewData) {
-            var value = NewData[key];
-            if (key in OldData) {
-              if (OldData[key] !== value) {
-                node.emit('onChange', data);
-                OldData = data;
-              }
-            }
-          };
-          // D.1.2) case with no changes in properties
-          OldData = data;                   
-        });
-        await device.init();
-        device.destroy();
-      } catch (exception) {
-        // D.2) catching errors from MIHOME Protocol
-        PollError = `Mihome Exception. IP: ${node.address} -> ${exception.message}`;
-        node.emit('onError', PollError);
-      }
+      return enqueueDeviceOp(async () => {
+        try {
+          // D.1) connect to device and poll for properties
+          await device.init();
+          device.destroy();
+        } catch (exception) {
+          // D.2) catching errors from MIHOME Protocol
+          PollError = `Mihome Exception. IP: ${node.address} -> ${exception.message}`;
+          node.emit('onError', PollError);
+        }
+      });
     };
     // E) Executing single command from send-node 
     function ExecuteSingleCMD () {
       node.on('onSingleCommand', async function (SingleCMD, SinglePayload) {
-        try {
-          // E.1) Initializing device if MIOT
-          if (device._miotSpecType) {
-            await device.init();
+        await enqueueDeviceOp(async () => {
+          try {
+            // E.1) Initializing device if MIOT
+            if (device._miotSpecType) {
+              await device.init();
+            };
+            // E.2) transfer command from input into device (in AWAIT mode)
+            await eval("device.set" + SingleCMD + "(" + SinglePayload + ")");
+            device.destroy();
+          } catch(exception) {
+            // E.3) catching errors from MIIO Protocol and sending back to send-node
+            SingleCMDErrorMsg = exception.message;
+            SingleCMDErrorCube = SingleCMD;
+            node.emit('onSingleCMDSentError', SingleCMDErrorMsg, SingleCMDErrorCube);
           };
-          // E.2) transfer command from input into device (in AWAIT mode)
-          await eval("device.set" + SingleCMD + "(" + SinglePayload + ")");
-          device.destroy();
-        } catch(exception) {
-          // E.3) catching errors from MIIO Protocol and sending back to send-node
-          SingleCMDErrorMsg = exception.message;
-          SingleCMDErrorCube = SingleCMD;
-          node.emit('onSingleCMDSentError', SingleCMDErrorMsg, SingleCMDErrorCube);
-        };
+        });
       })
     };
     // F) Executing JSON command from send-node (for each Item in JSON asynchronously)
     function ExecuteJsonCMD () {
       node.on('onJsonCommand', async function (CustomJsonCMD) {
-        for (let key of Object.keys(CustomJsonCMD)) {
+        await enqueueDeviceOp(async () => {
           try {
             // F.1) Initializing device if MIOT
             if (device._miotSpecType) {
               await device.init();
             };
+
             // F.2) transfer command from input into device (in AWAIT mode)
-            JsonItemX = [key] + "(" + CustomJsonCMD[key] + ")";
-            await eval("device.set" + JsonItemX);
-            device.destroy();  
+            for (const rawKey of Object.keys(CustomJsonCMD)) {
+              const key = String(rawKey).trim();
+              const methodName = `set${key}`;
+              const value = CustomJsonCMD[rawKey];
+
+              try {
+                if (typeof device[methodName] !== 'function') {
+                  throw new Error(`Unknown command: ${key} (missing ${methodName}())`);
+                }
+
+                await device[methodName](value);
+              } catch (exception) {
+                // Emit per-key error but continue processing the rest.
+                const msg = `Command failed: ${key}(${JSON.stringify(value)}) -> ${exception.message}`;
+                node.emit('onJsonCMDSentError', msg, CustomJsonCMD);
+              }
+            }
+
+            device.destroy();
           } catch(exception) {
             // F.3) catching errors from MIIO Protocol and sending back to send-node
             JsonCMDErrorMsg = exception.message;
             JsonCMDErrorCube = CustomJsonCMD;
             node.emit('onJsonCMDSentError', JsonCMDErrorMsg, JsonCMDErrorCube);
+            try { device.destroy(); } catch (_) {}
           };
-        };
+        });
       });
     };
   };
