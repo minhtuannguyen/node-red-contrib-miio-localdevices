@@ -386,6 +386,17 @@
         <td align="center">&#10060;</td>
         <td align="center">&#9989;</td>
       </tr>
+      <tr>
+        <td>9</td>
+        <td>careli.fryer.maf07</td>
+        <td>Mi Smart Air Fryer (3.5L)</td>
+        <td></td>
+        <td><ul><li>℃ Target Temperature</li><li>🕐 Target Time (minutes)</li><li>🕐 Appointment Time (minutes)</li><li>⚙ Food Quanty</li><li>⚙ Preheat Switch</li><li>⚙ Turn Pot</li><li>► Start Cook</li><li>❙❙ Pause</li><li>◼ Cancel Cooking</li><li>► Start Custom Cook</li><li>► Resume Cooking</li></ul></td>
+        <td><ul><li>40 - 200</li><li>1 - 1440</li><li>0 - 1440</li><li>0 - Null, 1 - Single, 2 - Double, 3 - Half, 4 - Full</li><li>0 - Null, 1 - Off, 2 - On</li><li>0 - Not Turn Pot, 1 - Switch Off, 2 - Turn Pot</li><li>any (payload ignored)</li><li>any (payload ignored)</li><li>any (payload ignored)</li><li>any (payload ignored)</li><li>any (payload ignored)</li></ul></td>
+        <td>{ TargetTemperature, TargetTime, AppointTime, FoodQuanty, PreheatSwitch, TurnPot, StartCook, Pause, CancelCooking, StartCustomCook, ResumeCooking }</td>
+        <td align="center">&#10060;</td>
+        <td align="center">&#9989;</td>
+      </tr>
     </tbody>
   </table>
 

@@ -73,10 +73,12 @@ module.exports = function(RED) {
       DataToBe = {};
       if (node.config.prop_type == "Friendly") {
         var FriendlyKeys = MIIOpropsVocabulary.properties_list(node.MIdevice.model);
-        let mapped = Object.keys(DataAsIS).map(OldKey => {
+        Object.keys(DataAsIS).forEach((OldKey) => {
           let NewKey = FriendlyKeys[OldKey];
+          if (NewKey === undefined || NewKey === null || NewKey === '') {
+            NewKey = OldKey;
+          }
           DataToBe[NewKey] = DataAsIS[OldKey];
-          return DataToBe;
         });
       } else {
         DataToBe = DataAsIS;

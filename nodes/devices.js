@@ -72,6 +72,25 @@ module.exports = function(RED) {
       token: node.token,
   });
 
+    // If a device is powered off / offline, some MIoT requests can hang long enough
+    // to block the serialized operation queue. Add explicit timeouts so we fail fast.
+    const INIT_TIMEOUT_MS = Number(process.env.MIIO_INIT_TIMEOUT_MS) || 1500;
+    const OP_TIMEOUT_MS = Number(process.env.MIIO_OP_TIMEOUT_MS) || 1500;
+
+    // When a device is offline (powered off), repeatedly calling init() every poll cycle
+    // just burns time and blocks other ops in the queue. Use a short backoff window
+    // after failures to reduce noise and improve responsiveness.
+    const OFFLINE_BACKOFF_MS = Number(process.env.MIIO_OFFLINE_BACKOFF_MS) || 5000;
+    let offlineUntil = 0;
+
+    function withTimeout(promise, ms, label) {
+      let t;
+      const timeout = new Promise((_, reject) => {
+        t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      });
+      return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+    }
+
     // Serialize all operations that touch the shared `device` instance.
     // Polling (`ConnDevice`) and Send Command handlers can otherwise overlap,
     // leading to a poll cycle calling `device.destroy()` while a command is in-flight.
@@ -156,14 +175,34 @@ module.exports = function(RED) {
     // D) Main Function - Polling the device
     async function ConnDevice () {
       return enqueueDeviceOp(async () => {
+        let inited = false;
         try {
+          const now = Date.now();
+          if (now < offlineUntil) {
+            // Device is likely offline; skip this poll cycle.
+            return;
+          }
+
           // D.1) connect to device and poll for properties
-          await device.init();
-          device.destroy();
+          await withTimeout(device.init(), INIT_TIMEOUT_MS, 'device.init');
+          inited = true;
+
+          // Success: clear offline backoff.
+          offlineUntil = 0;
         } catch (exception) {
           // D.2) catching errors from MIHOME Protocol
           PollError = `Mihome Exception. IP: ${node.address} -> ${exception.message}`;
           node.emit('onError', PollError);
+
+          // Any init/poll failure sets a short backoff window.
+          if (!inited) {
+            offlineUntil = Date.now() + OFFLINE_BACKOFF_MS;
+          }
+        } finally {
+          // Always destroy to ensure sockets are cleaned up even on failures/timeouts.
+          try {
+            device.destroy();
+          } catch (_) {}
         }
       });
     };
@@ -171,19 +210,24 @@ module.exports = function(RED) {
     function ExecuteSingleCMD () {
       node.on('onSingleCommand', async function (SingleCMD, SinglePayload) {
         await enqueueDeviceOp(async () => {
+          let inited = false;
           try {
             // E.1) Initializing device if MIOT
             if (device._miotSpecType) {
-              await device.init();
+              await withTimeout(device.init(), INIT_TIMEOUT_MS, 'device.init');
+              inited = true;
             };
             // E.2) transfer command from input into device (in AWAIT mode)
-            await eval("device.set" + SingleCMD + "(" + SinglePayload + ")");
-            device.destroy();
+            await withTimeout(eval("device.set" + SingleCMD + "(" + SinglePayload + ")"), OP_TIMEOUT_MS, `device.set${SingleCMD}`);
           } catch(exception) {
             // E.3) catching errors from MIIO Protocol and sending back to send-node
             SingleCMDErrorMsg = exception.message;
             SingleCMDErrorCube = SingleCMD;
             node.emit('onSingleCMDSentError', SingleCMDErrorMsg, SingleCMDErrorCube);
+          } finally {
+            try {
+              device.destroy();
+            } catch (_) {}
           };
         });
       })
@@ -192,10 +236,12 @@ module.exports = function(RED) {
     function ExecuteJsonCMD () {
       node.on('onJsonCommand', async function (CustomJsonCMD) {
         await enqueueDeviceOp(async () => {
+          let inited = false;
           try {
             // F.1) Initializing device if MIOT
             if (device._miotSpecType) {
-              await device.init();
+              await withTimeout(device.init(), INIT_TIMEOUT_MS, 'device.init');
+              inited = true;
             };
 
             // F.2) transfer command from input into device (in AWAIT mode)
@@ -209,21 +255,22 @@ module.exports = function(RED) {
                   throw new Error(`Unknown command: ${key} (missing ${methodName}())`);
                 }
 
-                await device[methodName](value);
+                await withTimeout(device[methodName](value), OP_TIMEOUT_MS, `device.${methodName}`);
               } catch (exception) {
                 // Emit per-key error but continue processing the rest.
                 const msg = `Command failed: ${key}(${JSON.stringify(value)}) -> ${exception.message}`;
                 node.emit('onJsonCMDSentError', msg, CustomJsonCMD);
               }
             }
-
-            device.destroy();
           } catch(exception) {
             // F.3) catching errors from MIIO Protocol and sending back to send-node
             JsonCMDErrorMsg = exception.message;
             JsonCMDErrorCube = CustomJsonCMD;
             node.emit('onJsonCMDSentError', JsonCMDErrorMsg, JsonCMDErrorCube);
-            try { device.destroy(); } catch (_) {}
+          } finally {
+            try {
+              device.destroy();
+            } catch (_) {}
           };
         });
       });
