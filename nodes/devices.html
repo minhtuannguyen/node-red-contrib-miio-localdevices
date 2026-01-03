@@ -24,7 +24,6 @@
         <option value="heatfan">Heaters, Fans & Toilets</option>
         <option value="vacuum">Vacuum Cleaners</option>
         <option value="light">Lights</option>
-        <option value="kettle">Kettles</option>
       </select>
     </div>
 	</div>
@@ -181,18 +180,6 @@
           for (var key in ImportedLightsList) {
             Selector.append(
               `<option value="${ImportedLightsList[key].model}">${ImportedLightsList[key].name}</option>`
-            );
-          };
-          $(`#node-config-input-model option[value="${CurrentModel}"]`).attr('selected', 'selected');
-        });
-        break;
-      }
-      case "kettle": {
-        $.getJSON('node-red-contrib-miio-localdevices/nodes/getKettleList/').done(function (data) {
-          var ImportedKettleList = data;
-          for (var key in ImportedKettleList) {
-            Selector.append(
-              `<option value="${ImportedKettleList[key].model}">${ImportedKettleList[key].name}</option>`
             );
           };
           $(`#node-config-input-model option[value="${CurrentModel}"]`).attr('selected', 'selected');
