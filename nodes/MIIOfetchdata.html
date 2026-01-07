@@ -1,0 +1,93 @@
+<script type="text/html" data-template-name="MIIOfetchdata">
+  <div class="form-row">
+    <label for="node-input-devices"><i class="fa fa-wifi"></i> Device</label>
+    <input id="node-input-devices">
+  </div>
+
+  <hr align="middle"/>
+
+  <div class="form-row">
+    <label for="node-input-prop_type"><i class="fa fa-newspaper-o"></i> Props Type</label>
+    <div style="display: inline-block; position: relative; width: 70%; height: 20px;">
+      <select id="node-input-prop_type" data-single="true" style="width: 100%">
+        <option value="MiProtocol">Mi Protocol Name</option>
+        <option value="Friendly">Friendly Name</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="form-row">
+    <label for="node-input-passthrough"><i class="fa fa-arrow-right"></i> Passthrough</label>
+    <input type="checkbox" id="node-input-passthrough" style="width: auto; vertical-align: middle;">
+    <span style="margin-left: 5px;">Pass through input message properties</span>
+  </div>
+
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" placeholder="Name">
+  </div>
+</script>
+
+
+<script type="text/html" data-help-name="MIIOfetchdata">
+  <h3>Guide for setting up node:</h3>
+    <ol>
+      <li>Select a pre-configured device from the pick-list</li>
+      <li>Select property type in output message: Mi Protocol default name or Friendly name</li>
+      <li>Optionally enable passthrough to preserve input message properties</li>
+    </ol>
+  <h3>Input</h3>
+    <dl class="message-properties">
+      <dt>payload <span class="property-type">any</span></dt>
+      <dd>Any input message will trigger fetching device data</dd>
+    </dl>
+  <h3>Output</h3>
+    <dl class="message-properties">
+      <dt>payload <span class="property-type">object</span></dt>
+      <dd>object with full list of device properties</dd>
+
+      <dt>name <span class="property-type">string</span></dt>
+      <dd>name and room of the device</dd>
+
+      <dt>address <span class="property-type">string</span></dt>
+      <dd>IP-address of the device</dd>
+
+      <dt>model <span class="property-type">string</span></dt>
+      <dd>model of the device</dd>
+    </dl>    
+  <h3>Trigger-based Operation</h3>
+    <p>This node does NOT poll automatically. It fetches device data only when triggered by an incoming message from another node.</p>
+    <p>Use an inject node, a timer, or any other node to trigger data fetching on demand.</p>
+  <h3>Passthrough Option</h3>
+    <p>When enabled, the output message will include properties from the input message, allowing you to chain nodes and preserve context.</p>
+  <h3>Details</h3>
+    <p>For details please refer to <a href="https://github.com/stason325/node-red-contrib-miio-localdevices">documentation</a></p>
+</script>
+
+
+<script type="text/javascript">
+  RED.nodes.registerType('MIIOfetchdata', {
+    category: 'mihome',
+    color: '#00bc9c',
+    defaults: {
+      devices: {value: "", type: "MIIOdevices"},
+      prop_type: {value: ""},
+      passthrough: {value: false},
+      name: {value: ""}
+    },
+    inputs: 1,
+    outputs: 1,
+    icon: "mi.png",
+    align: "right",
+    label: function() {
+      return this.name || "Fetch Data";
+    },
+    paletteLabel: "Fetch Data",
+    oneditprepare: OnStart,  
+  });
+
+  function OnStart() {
+    let CurrPropType = this.prop_type;
+    $(`#node-input-prop_type option[value="${CurrPropType}"]`).attr('selected', 'selected');
+  }
+</script>

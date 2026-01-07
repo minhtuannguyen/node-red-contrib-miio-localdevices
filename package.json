@@ -26,6 +26,7 @@
     "nodes": {
       "devices": "nodes/devices.js",
       "GET": "nodes/MIIOgetdata.js",
+      "FETCH": "nodes/MIIOfetchdata.js",
       "SET": "nodes/MIIOsendcommand.js"
     }
   },
