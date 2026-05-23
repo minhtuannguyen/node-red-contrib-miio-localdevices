@@ -41,19 +41,27 @@
       <dt>payload <span class="property-type">any</span></dt>
       <dd>Any input message will trigger fetching device data</dd>
     </dl>
-  <h3>Output</h3>
+  <h3>Output 1 — device online</h3>
     <dl class="message-properties">
       <dt>payload <span class="property-type">object</span></dt>
-      <dd>object with full list of device properties</dd>
-
+      <dd>full list of device properties</dd>
+      <dt>reachable <span class="property-type">boolean</span></dt>
+      <dd>always <code>true</code> on this output</dd>
       <dt>name <span class="property-type">string</span></dt>
       <dd>name and room of the device</dd>
-
       <dt>address <span class="property-type">string</span></dt>
       <dd>IP-address of the device</dd>
-
       <dt>model <span class="property-type">string</span></dt>
       <dd>model of the device</dd>
+    </dl>
+  <h3>Output 2 — offline / error</h3>
+    <dl class="message-properties">
+      <dt>reachable <span class="property-type">boolean</span></dt>
+      <dd>always <code>false</code> on this output</dd>
+      <dt>error <span class="property-type">string</span></dt>
+      <dd>reason the fetch failed (timeout, connection refused, etc.)</dd>
+      <dt>payload <span class="property-type">object</span></dt>
+      <dd>empty object <code>{}</code></dd>
     </dl>    
   <h3>Trigger-based Operation</h3>
     <p>This node does NOT poll automatically. It fetches device data only when triggered by an incoming message from another node.</p>
@@ -76,7 +84,8 @@
       name: {value: ""}
     },
     inputs: 1,
-    outputs: 1,
+    outputs: 2,
+    outputLabels: ['data (device online)', 'offline / error'],
     icon: "mi.png",
     align: "right",
     label: function() {

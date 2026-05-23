@@ -16,83 +16,83 @@ module.exports = function(RED) {
       node.on('input', async function(msg, send, done) {
         // For Node-RED 0.x compatibility
         send = send || function() { node.send.apply(node, arguments) };
-        
+
         node.status({fill: "blue", shape: "dot", text: "Fetching..."});
-        
-        // Build output message structure
-        var outMsg = {};
-        outMsg.name = node.MIdevice.name + " - " + node.MIdevice.room;
-        outMsg.address = node.MIdevice.address;
-        outMsg.model = node.MIdevice.model;
-        
-        // Preserve original message properties if configured
+
+        // Build base output message
+        let baseMsg = {
+          name:    node.MIdevice.name + " - " + node.MIdevice.room,
+          address: node.MIdevice.address,
+          model:   node.MIdevice.model,
+        };
         if (node.config.passthrough) {
-          outMsg = Object.assign({}, msg, outMsg);
+          baseMsg = Object.assign({}, msg, baseMsg);
         }
-        
+
+        // Single 15 s budget covers spec fetch + init + properties event.
+        const FETCH_TIMEOUT_MS = 15000;
+        let device = null;
+        let timeoutHandle = null;
+
         try {
-          // Create a temporary device connection to fetch current properties
-          const device = mihome.device({
-            id: node.MIdevice.MI_id,
-            model: node.MIdevice.model,
-            address: node.MIdevice.address,
-            token: node.MIdevice.token,
-          });
-
-          const FETCH_TIMEOUT_MS = 15000;
-
-          // Set up a one-time listener for properties
-          const dataPromise = new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-              reject(new Error('Timeout waiting for device properties'));
+          const DataAsIS = await new Promise((resolve, reject) => {
+            timeoutHandle = setTimeout(() => {
+              reject(new Error(`Device ${node.MIdevice.address} did not respond within ${FETCH_TIMEOUT_MS / 1000}s`));
             }, FETCH_TIMEOUT_MS);
 
-            device.on('properties', (data) => {
-              clearTimeout(timer);
+            device = mihome.device({
+              id:      node.MIdevice.MI_id,
+              model:   node.MIdevice.model,
+              address: node.MIdevice.address,
+              token:   node.MIdevice.token,
+            });
+
+            // Resolve as soon as the device emits its properties.
+            device.once('properties', (data) => {
+              clearTimeout(timeoutHandle);
               resolve(data);
+            });
+
+            // init() starts the whole chain (spec fetch → loadProperties → poll).
+            device.init().catch((err) => {
+              clearTimeout(timeoutHandle);
+              reject(err);
             });
           });
 
-          // Initialize device — wrapped with a timeout so an offline or
-          // unreachable device (including a failed MIoT spec fetch) does not
-          // block Node-RED indefinitely.
-          await Promise.race([
-            device.init(),
-            new Promise((_, reject) =>
-              setTimeout(
-                () => reject(new Error(`Device ${node.MIdevice.address} did not respond within ${FETCH_TIMEOUT_MS / 1000}s`)),
-                FETCH_TIMEOUT_MS,
-              )
-            ),
-          ]);
+          // Success path ─────────────────────────────────────────────────────
+          try { device.destroy(); } catch (_) {}
 
-          // Wait for properties data
-          const DataAsIS = await dataPromise;
+          const outMsg = Object.assign({}, baseMsg, {
+            reachable: true,
+            payload:   convertObj(DataAsIS),
+          });
 
-          // Clean up
-          device.destroy();
-          
-          // Convert and send data
-          var DataToBe = convertObj(DataAsIS);
-          outMsg.payload = DataToBe;
-          
-          node.status({fill: "green", shape: "dot", text: "Data fetched"});
-          send(outMsg);
-          
-          setTimeout(() => {
-            node.status({});
-          }, 2000);
-          
+          node.status({fill: "green", shape: "dot", text: "Online"});
+          setTimeout(() => node.status({}), 3000);
+
+          // Output 1: data; Output 2: nothing
+          send([outMsg, null]);
           if (done) done();
+
         } catch (error) {
-          node.status({fill: "red", shape: "ring", text: "Fetch error"});
-          node.warn("Failed to fetch device data: " + error.message);
-          
-          setTimeout(() => {
-            node.status({});
-          }, 3000);
-          
-          if (done) done(error);
+          // Offline / timeout path ────────────────────────────────────────────
+          clearTimeout(timeoutHandle);
+          try { if (device) device.destroy(); } catch (_) {}
+
+          const errMsg = Object.assign({}, baseMsg, {
+            reachable: false,
+            error:     error.message,
+            payload:   {},
+          });
+
+          node.status({fill: "red", shape: "ring", text: "Offline"});
+          setTimeout(() => node.status({}), 5000);
+
+          // Output 1: nothing; Output 2: offline info
+          send([null, errMsg]);
+          // done() without error — the offline case is handled via output 2
+          if (done) done();
         }
       });
     } else {
