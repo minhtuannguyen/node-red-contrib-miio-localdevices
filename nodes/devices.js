@@ -32,9 +32,13 @@ function withTimeout(promise, ms, label) {
 const _routesRegistered = new WeakSet();
 
 module.exports = function(RED) {
-  // Register static device-list routes exactly once per Node-RED runtime.
+  // Register static device-list routes and initialize shared protocols exactly
+  // once per Node-RED runtime. Multiple device nodes starting simultaneously
+  // each called miioProtocol.init() which created concurrent UDP sockets and
+  // caused the `getsockname EBADF` crash.
   if (!_routesRegistered.has(RED)) {
     _routesRegistered.add(RED);
+    mihome.miioProtocol.init();
     RED.httpAdmin.get(NODE_PATH + 'getHumidList/',   (req, res) => res.json(MIIOdevtypesVocabulary.humid_list()));
     RED.httpAdmin.get(NODE_PATH + 'getPurifList/',   (req, res) => res.json(MIIOdevtypesVocabulary.purif_list()));
     RED.httpAdmin.get(NODE_PATH + 'getHeatFanList/', (req, res) => res.json(MIIOdevtypesVocabulary.heatfan_list()));
@@ -66,8 +70,7 @@ module.exports = function(RED) {
       res.json(MIIOcommandsVocabulary.command_list(node.model));
     });
 
-    // 1) Initialize MI Protocols
-    MiioConnect();
+    // 1) Cloud auth (per-node — credentials may differ per device)
     MiotConnect();
 
     // 2) Set up the device instance
@@ -148,10 +151,6 @@ module.exports = function(RED) {
 
 
     // ── Helper functions ──────────────────────────────────────────────────────
-
-    function MiioConnect() {
-      mihome.miioProtocol.init();
-    }
 
     async function MiotConnect() {
       if (node.isMIOT) {
