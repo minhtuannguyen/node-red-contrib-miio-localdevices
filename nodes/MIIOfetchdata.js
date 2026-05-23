@@ -39,24 +39,36 @@ module.exports = function(RED) {
             token: node.MIdevice.token,
           });
 
+          const FETCH_TIMEOUT_MS = 15000;
+
           // Set up a one-time listener for properties
           const dataPromise = new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
+            const timer = setTimeout(() => {
               reject(new Error('Timeout waiting for device properties'));
-            }, 10000); // 10 second timeout
+            }, FETCH_TIMEOUT_MS);
 
             device.on('properties', (data) => {
-              clearTimeout(timeout);
+              clearTimeout(timer);
               resolve(data);
             });
           });
 
-          // Initialize device to fetch properties
-          await device.init();
-          
+          // Initialize device — wrapped with a timeout so an offline or
+          // unreachable device (including a failed MIoT spec fetch) does not
+          // block Node-RED indefinitely.
+          await Promise.race([
+            device.init(),
+            new Promise((_, reject) =>
+              setTimeout(
+                () => reject(new Error(`Device ${node.MIdevice.address} did not respond within ${FETCH_TIMEOUT_MS / 1000}s`)),
+                FETCH_TIMEOUT_MS,
+              )
+            ),
+          ]);
+
           // Wait for properties data
           const DataAsIS = await dataPromise;
-          
+
           // Clean up
           device.destroy();
           
