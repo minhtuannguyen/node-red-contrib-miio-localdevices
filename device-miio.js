@@ -29,9 +29,8 @@ function _readDiskCache(specType) {
 
 function _writeDiskCache(specType, data) {
   try {
-    if (!fs.existsSync(CACHE_DIR)) {
-      fs.mkdirSync(CACHE_DIR, { recursive: true });
-    }
+    // mkdirSync with recursive:true is idempotent — no existsSync needed.
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
     fs.writeFileSync(_cachePath(specType), JSON.stringify(data), 'utf8');
   } catch (_) {
     // Non-fatal: we still have the in-memory copy for this session.

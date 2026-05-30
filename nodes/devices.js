@@ -2,40 +2,32 @@
 
 const MIIOcommandsVocabulary = require('../lib/commandsLib.js');
 const MIIOdevtypesVocabulary = require('../lib/devtypesLib.js');
-const mihome = require('node-mihome');
-const registerMiHomeModels = require('../lib/registerMiHomeModels');
+const mihome                 = require('node-mihome');
+const registerMiHomeModels   = require('../lib/registerMiHomeModels');
 
-// Ensure device definitions under `defFiles/` are usable by node-mihome.
 registerMiHomeModels(mihome);
 
-const NODE_PATH = '/node-red-contrib-miio-localdevices/nodes/';
-
-// How long (ms) to wait for a device to respond before giving up.
-// This prevents the node from hanging forever when a device is offline.
+const NODE_PATH        = '/node-red-contrib-miio-localdevices/nodes/';
 const DEVICE_TIMEOUT_MS = 15000;
 
-// Wrap any promise with a hard timeout so offline devices don't block Node-RED.
+// Wrap a promise with a hard deadline.
+// The internal timer is ALWAYS cleared when the promise settles (resolve or
+// reject) so it never leaks a 15-second closure on the happy path.
 function withTimeout(promise, ms, label) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(
-        () => reject(new Error(`${label || 'Device'} did not respond within ${ms / 1000}s`)),
-        ms,
-      )
-    ),
-  ]);
+  let timer;
+  const race = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label || 'Device'} did not respond within ${ms / 1000}s`)),
+      ms,
+    );
+  });
+  return Promise.race([promise, race]).finally(() => clearTimeout(timer));
 }
 
-// Track which RED instances have had the static routes registered to avoid
-// duplicate registrations when multiple device nodes are deployed.
 const _routesRegistered = new WeakSet();
 
 module.exports = function(RED) {
-  // Register static device-list routes and initialize shared protocols exactly
-  // once per Node-RED runtime. Multiple device nodes starting simultaneously
-  // each called miioProtocol.init() which created concurrent UDP sockets and
-  // caused the `getsockname EBADF` crash.
+  // One-time setup per Node-RED runtime: protocol init + static admin routes.
   if (!_routesRegistered.has(RED)) {
     _routesRegistered.add(RED);
     mihome.miioProtocol.init();
@@ -48,9 +40,10 @@ module.exports = function(RED) {
 
   function MIIOdevicesNode(n) {
     RED.nodes.createNode(this, n);
-    let node = this;
+    const node = this;
 
-    node.setMaxListeners(255);
+    // Multiple MIIOgetdata/sendcommand nodes each attach listeners here.
+    node.setMaxListeners(100);
 
     node.name            = n.name;
     node.room            = n.room;
@@ -65,25 +58,33 @@ module.exports = function(RED) {
     node.isPolling       = n.isPolling;
     node.pollinginterval = n.pollinginterval;
 
-    // Per-node route: includes node.id so it must stay inside the constructor.
+    // Per-node: node.id is unique so this must stay inside the constructor.
     RED.httpAdmin.get(NODE_PATH + 'getCommands/' + node.id, (req, res) => {
       res.json(MIIOcommandsVocabulary.command_list(node.model));
     });
 
-    // 1) Cloud auth (per-node — credentials may differ per device)
-    MiotConnect();
+    // Cloud auth — non-blocking; surface errors via the standard error channel.
+    if (node.isMIOT) {
+      mihome.miCloudProtocol.login(node.username, node.password)
+        .catch(e => node.emit('onError', `Cloud login failed: ${e.message}`));
+    }
 
-    // 2) Set up the device instance
+    // refresh: 0  →  this.refresh = 0  →  poll() skips setInterval.
+    // We manage our own polling loop so we don't want the library to also start
+    // its own interval on every device.init() call — that would create+destroy
+    // a setInterval on every poll cycle for no benefit.
     const device = mihome.device({
       id:      node.MI_id,
       model:   node.model,
       address: node.address,
       token:   node.token,
+      refresh: 0,
     });
 
-    // ── Operation queue ───────────────────────────────────────────────────────
-    // Serializes all calls that touch `device` (polling + commands) without
-    // building up an ever-growing promise chain.
+    // ── Operation queue ──────────────────────────────────────────────────────
+    // Prevents concurrent access to the shared `device` instance (poll vs
+    // commands). Uses a fixed-size array — constant memory regardless of
+    // uptime. Previous implementation grew a promise chain indefinitely.
     let _opBusy = false;
     const _opQueue = [];
 
@@ -104,12 +105,13 @@ module.exports = function(RED) {
         reject(e);
       } finally {
         _opBusy = false;
-        _drainQueue();
+        _drainQueue().catch(() => {}); // tail-call; catch prevents unhandled rejection
       }
     }
 
-    // 3) Attach the properties listener once (not inside ConnDevice which runs
-    //    on every poll — that caused MaxListenersExceededWarning + memory growth).
+    // Single properties listener, attached once.
+    // Attaching inside ConnDevice() (which runs every poll) caused
+    // MaxListenersExceededWarning and memory growth proportional to uptime.
     let OldData = {};
     device.on('properties', (data) => {
       for (const key in data) {
@@ -121,50 +123,40 @@ module.exports = function(RED) {
       OldData = data;
     });
 
-    // 4) Auto-polling variables — local to this node instance (no global leaks)
-    let Poll_or_Not     = node.isPolling;
-    let Polling_Interval = (node.pollinginterval != null) ? Number(node.pollinginterval) : 30;
+    // ── Polling ──────────────────────────────────────────────────────────────
+    const Poll_or_Not     = node.isPolling;
+    const Polling_Interval = (node.pollinginterval != null) ? Number(node.pollinginterval) : 30;
+    let _pollTimer = null;
 
-    // 5) Clean up when the node is removed or redeployed
-    node.on('close', () => OnClose());
+    // Close handler registered before any async work so it always runs.
+    node.on('close', OnClose);
 
-    // 6) Initial data fetch
-    ConnDevice().then(() => {
-      node.emit('onInit', OldData);
-    });
+    ConnDevice()
+      .then(() => node.emit('onInit', OldData))
+      .catch(e => node.emit('onError', `Init failed: ${e.message}`));
 
-    // 7) Register send-command handlers
     ExecuteSingleCMD();
     ExecuteJsonCMD();
 
-    // 8) Auto-polling cycle
-    setTimeout(function run() {
-      if (!Poll_or_Not) return;
-      if (Polling_Interval > 0) {
-        const New_Interval = (node.pollinginterval != null) ? Number(node.pollinginterval) : 30;
-        if (New_Interval === Polling_Interval) {
-          ConnDevice();
-          setTimeout(run, Polling_Interval * 1000);
-        }
-      }
-    }, Polling_Interval * 1000);
-
-
-    // ── Helper functions ──────────────────────────────────────────────────────
-
-    async function MiotConnect() {
-      if (node.isMIOT) {
-        await mihome.miCloudProtocol.login(node.username, node.password);
-      }
+    // Only schedule the polling loop if polling is actually enabled.
+    // Avoids creating a timer that immediately returns on its first invocation.
+    if (Poll_or_Not && Polling_Interval > 0) {
+      _pollTimer = setTimeout(function run() {
+        if (!Poll_or_Not) return;
+        ConnDevice();
+        _pollTimer = setTimeout(run, Polling_Interval * 1000);
+      }, Polling_Interval * 1000);
     }
 
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
     function OnClose() {
-      Poll_or_Not = false;      // stop the polling loop
-      _opQueue.length = 0;      // discard pending queued operations
+      // Stop the polling loop and release all pending operations immediately.
+      clearTimeout(_pollTimer);
+      _opQueue.length = 0;
       try { device.destroy(); } catch (_) {}
     }
 
-    // D) Poll the device for its current properties
     async function ConnDevice() {
       return enqueueDeviceOp(async () => {
         try {
@@ -177,7 +169,6 @@ module.exports = function(RED) {
       });
     }
 
-    // E) Execute a single named command from the send-node
     function ExecuteSingleCMD() {
       node.on('onSingleCommand', (SingleCMD, SinglePayload) => {
         enqueueDeviceOp(async () => {
@@ -185,7 +176,15 @@ module.exports = function(RED) {
             if (device._miotSpecType) {
               await withTimeout(device.init(), DEVICE_TIMEOUT_MS, `Device ${node.address}`);
             }
-            await eval('device.set' + SingleCMD + '(' + SinglePayload + ')');
+            // Direct method lookup instead of eval():
+            //   • faster (V8 can optimise the surrounding function)
+            //   • safe (no code injection)
+            //   • correct for all payload types including objects
+            const method = 'set' + SingleCMD;
+            if (typeof device[method] !== 'function') {
+              throw new Error(`Unknown command: ${method}()`);
+            }
+            await device[method](SinglePayload);
             device.destroy();
           } catch (exception) {
             node.emit('onSingleCMDSentError', exception.message, SingleCMD);
@@ -195,7 +194,6 @@ module.exports = function(RED) {
       });
     }
 
-    // F) Execute a JSON map of commands from the send-node
     function ExecuteJsonCMD() {
       node.on('onJsonCommand', (CustomJsonCMD) => {
         enqueueDeviceOp(async () => {
@@ -203,7 +201,6 @@ module.exports = function(RED) {
             if (device._miotSpecType) {
               await withTimeout(device.init(), DEVICE_TIMEOUT_MS, `Device ${node.address}`);
             }
-
             for (const rawKey of Object.keys(CustomJsonCMD)) {
               const key        = String(rawKey).trim();
               const methodName = `set${key}`;
@@ -214,14 +211,11 @@ module.exports = function(RED) {
                 }
                 await device[methodName](value);
               } catch (exception) {
-                node.emit(
-                  'onJsonCMDSentError',
+                node.emit('onJsonCMDSentError',
                   `Command failed: ${key}(${JSON.stringify(value)}) -> ${exception.message}`,
-                  CustomJsonCMD,
-                );
+                  CustomJsonCMD);
               }
             }
-
             device.destroy();
           } catch (exception) {
             node.emit('onJsonCMDSentError', exception.message, CustomJsonCMD);
