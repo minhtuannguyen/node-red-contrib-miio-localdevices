@@ -6,27 +6,34 @@ module.exports = function(RED) {
   function MIIOgetdataNode(config) {
     RED.nodes.createNode(this, config);
 
-    const node = this;
-    node.config  = config;
+    const node    = this;
+    node.config   = config;
     node.MIdevice = RED.nodes.getNode(config.devices);
 
     node.status({});
 
-    if (!node.MIdevice) return;
+    // Iter 9: Show a clear status when no device config is attached, rather
+    // than silently returning and leaving the node in an ambiguous blank state.
+    if (!node.MIdevice) {
+      node.status({ fill: 'red', shape: 'ring', text: 'No device configured' });
+      return;
+    }
 
-    // All local — no global leaks.
     const Poll_or_Not      = node.MIdevice.isPolling;
     const Polling_Interval = node.MIdevice.pollinginterval;
 
-    // Build the base message once; payload is updated on each send.
+    // Base message built once; payload is updated on each send.
+    // Iter R8: initialise payload to null so node.error(err, msg) always
+    // delivers a complete message object to downstream Catch nodes, even
+    // when an error fires before the first properties event.
     const msg = {
       polling: Poll_or_Not ? `ON. Every ${Polling_Interval} sec` : 'OFF',
       name:    node.MIdevice.name + ' - ' + node.MIdevice.room,
       address: node.MIdevice.address,
       model:   node.MIdevice.model,
+      payload: null,
     };
 
-    // Single tracked timer so rapid events don't pile up dozens of timeouts.
     let statusTimer = null;
 
     function setStatus(fill, shape, text, clearAfterMs) {
@@ -37,21 +44,24 @@ module.exports = function(RED) {
       }
     }
 
-    // Conversion: MiProtocol keys → Friendly names (or passthrough).
+    // Iter 10: Cache properties_list at construction instead of calling it on
+    // every onChange/onInit event. properties_list() runs a switch statement
+    // over the model string on every call; for high-frequency devices this
+    // accumulates unnecessary CPU cycles over long uptimes.
+    const _propKeys = config.prop_type === 'Friendly'
+      ? MIIOpropsVocabulary.properties_list(node.MIdevice.model)
+      : null;
+
     function convertObj(DataAsIS) {
-      if (node.config.prop_type !== 'Friendly') return DataAsIS;
-      const keys = MIIOpropsVocabulary.properties_list(node.MIdevice.model);
-      const out  = {};
+      if (!_propKeys) return DataAsIS;
+      const out = {};
       for (const k of Object.keys(DataAsIS)) {
-        const fk = keys[k];
+        const fk = _propKeys[k];
         out[(fk && fk !== '') ? fk : k] = DataAsIS[k];
       }
       return out;
     }
 
-    // Named listener functions so they can be cleanly removed on close.
-    // Previously anonymous functions were passed to .on() and could never be
-    // removed, causing listeners to accumulate with every redeploy.
     function onInit(data) {
       setStatus('green', 'dot', 'Connection: OK', 2000);
       msg.payload = convertObj(data);
@@ -64,9 +74,12 @@ module.exports = function(RED) {
       node.send(msg);
     }
 
+    // Iter 11: Use node.error() instead of node.warn() so errors surface in
+    // the Node-RED debug panel with an error badge and can be caught by a
+    // Catch node downstream. node.warn() only writes to the log.
     function onError(err) {
       setStatus('red', 'ring', 'Connection: error');
-      node.warn(err);
+      node.error(err, msg);
     }
 
     node.MIdevice.on('onInit',   onInit);

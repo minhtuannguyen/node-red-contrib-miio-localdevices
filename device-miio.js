@@ -19,19 +19,25 @@ function _cachePath(specType) {
   return path.join(CACHE_DIR, safe + '.json');
 }
 
-function _readDiskCache(specType) {
+// Iter 16: Use async fs.promises to avoid blocking the Node-RED event loop
+// while reading the disk cache. A sync readFileSync stalls ALL other flows
+// for the duration of the disk read (even if only a few ms per model restart).
+async function _readDiskCache(specType) {
   try {
-    return JSON.parse(fs.readFileSync(_cachePath(specType), 'utf8'));
+    const content = await fs.promises.readFile(_cachePath(specType), 'utf8');
+    return JSON.parse(content);
   } catch (_) {
     return null;
   }
 }
 
-function _writeDiskCache(specType, data) {
+// Iter 17: Fire-and-forget async write — we already have the spec in the
+// memory cache so there is no reason to block miotFetchSpec() on the write.
+// The inner try/catch ensures the returned Promise never rejects.
+async function _writeDiskCache(specType, data) {
   try {
-    // mkdirSync with recursive:true is idempotent — no existsSync needed.
-    fs.mkdirSync(CACHE_DIR, { recursive: true });
-    fs.writeFileSync(_cachePath(specType), JSON.stringify(data), 'utf8');
+    await fs.promises.mkdir(CACHE_DIR, { recursive: true });
+    await fs.promises.writeFile(_cachePath(specType), JSON.stringify(data), 'utf8');
   } catch (_) {
     // Non-fatal: we still have the in-memory copy for this session.
   }
@@ -54,8 +60,8 @@ class CachedMiioDevice extends BaseDevice {
       return this._miotSpec;
     }
 
-    // Tier 2: disk
-    const fromDisk = _readDiskCache(specType);
+    // Tier 2: disk (awaited because _readDiskCache is now async)
+    const fromDisk = await _readDiskCache(specType);
     if (fromDisk) {
       specMemCache[specType] = fromDisk;
       this._miotSpec = fromDisk;
@@ -65,7 +71,7 @@ class CachedMiioDevice extends BaseDevice {
     // Tier 3: network — runs at most once per model, ever
     const result = await super.miotFetchSpec(specType);
     specMemCache[specType] = result;
-    _writeDiskCache(specType, result);
+    _writeDiskCache(specType, result); // fire-and-forget: no await needed
     return result;
   }
 }

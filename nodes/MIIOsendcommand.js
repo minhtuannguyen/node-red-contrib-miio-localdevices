@@ -11,11 +11,6 @@ module.exports = function(RED) {
     node.status({});
 
     // ── Listener / timer tracking ─────────────────────────────────────────────
-    // .once() listeners for command errors must be removed when:
-    //   • the command succeeds (error never fires) — otherwise they pile up
-    //   • the node closes
-    // We store a reference to the current listener so the previous one is
-    // always removed before a new one is added.
     let _singleErrListener = null;
     let _singleErrTimer    = null;
     let _jsonErrListener   = null;
@@ -55,10 +50,22 @@ module.exports = function(RED) {
     });
 
     // ── Input handler ─────────────────────────────────────────────────────────
-    node.on('input', function(msg) {
-      setStatus('gray', 'dot', 'Connecting...');
+    // Iter 12: 3-argument form (msg, send, done) for Node-RED 1.0+ compatibility.
+    // send() is the correct way to forward messages; done() signals the runtime
+    // that input processing is complete, enabling proper backpressure tracking.
+    node.on('input', function(msg, send, done) {
+      send = send || function() { node.send.apply(node, arguments); };
+      done = done || function() {};
 
-      if (!node.MIdevice) return;
+      // Iter R6: Check device config BEFORE setting status, so the node does
+      // not get stuck showing 'Connecting...' when no device is configured.
+      if (!node.MIdevice) {
+        node.status({ fill: 'red', shape: 'ring', text: 'No device configured' });
+        done();
+        return;
+      }
+
+      setStatus('gray', 'dot', 'Connecting...');
 
       msg.name    = node.MIdevice.name + ' - ' + node.MIdevice.room;
       msg.address = node.MIdevice.address;
@@ -71,44 +78,45 @@ module.exports = function(RED) {
       }
 
       function SendSingleCMD() {
-        const SingleCMD     = node.config.command;  // local — no global leak
-        const SinglePayload = msg.payload;           // local — no global leak
+        const SingleCMD     = node.config.command;
+        const SinglePayload = msg.payload;
 
-        // Remove previous unfired listener before registering a new one.
         clearSingleErr();
 
         _singleErrListener = (errMsg, errCmd) => {
           if (errCmd === SingleCMD) {
-            node.warn(`Mihome Exception. IP: ${node.MIdevice.address} -> ${errMsg}`);
+            // Iter 13: node.error() surfaces in the debug panel and can be
+            // caught by a Catch node. node.warn() only writes to the log.
+            node.error('Mihome Exception. IP: ' + node.MIdevice.address + ' -> ' + errMsg, msg);
             setStatus('red', 'ring', 'Command: error');
           }
           clearSingleErr();
         };
         node.MIdevice.once('onSingleCMDSentError', _singleErrListener);
-        // Remove listener after the device timeout window even if no error fires,
-        // so successful commands don't leave a dangling listener indefinitely.
+        // Auto-clean listener after the timeout window even if no error fires.
         _singleErrTimer = setTimeout(clearSingleErr, 20000);
 
         node.MIdevice.emit('onSingleCommand', SingleCMD, SinglePayload);
         setStatus('green', 'dot', 'Command: sent', 5000);
         msg.payload = { [SingleCMD]: SinglePayload };
-        node.send(msg);
+        send(msg);
+        done();
       }
 
       function SendCustomJsonCMD() {
-        const CustomJsonCMD = msg.payload;  // local — no global leak
+        const CustomJsonCMD = msg.payload;
 
         if (!CustomJsonCMD || typeof CustomJsonCMD !== 'object' || Array.isArray(CustomJsonCMD)) {
-          node.warn('Custom JSON command expects msg.payload to be an object like {"KeepWarmTemperature": 65}');
+          node.error('Custom JSON command expects msg.payload to be an object like {"KeepWarmTemperature": 65}', msg);
           setStatus('red', 'ring', 'Command: error');
+          done();
           return;
         }
 
-        // Remove previous unfired listener before registering a new one.
         clearJsonErr();
 
         _jsonErrListener = (errMsg) => {
-          node.warn(`Mihome Exception. IP: ${node.MIdevice.address} -> ${errMsg}`);
+          node.error('Mihome Exception. IP: ' + node.MIdevice.address + ' -> ' + errMsg, msg);
           setStatus('red', 'ring', 'Command: error');
           clearJsonErr();
         };
@@ -118,7 +126,8 @@ module.exports = function(RED) {
         node.MIdevice.emit('onJsonCommand', CustomJsonCMD);
         setStatus('green', 'dot', 'Command: sent', 15000);
         msg.payload = CustomJsonCMD;
-        node.send(msg);
+        send(msg);
+        done();
       }
     });
   }

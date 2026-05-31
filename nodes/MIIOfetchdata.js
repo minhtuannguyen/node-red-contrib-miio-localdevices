@@ -20,8 +20,6 @@ module.exports = function(RED) {
       return;
     }
 
-    // Track the status timer so rapid triggers don't pile up dozens of
-    // pending clearance timeouts.
     let statusTimer = null;
 
     function setStatus(fill, shape, text, clearAfterMs) {
@@ -34,8 +32,26 @@ module.exports = function(RED) {
 
     node.on('close', () => clearTimeout(statusTimer));
 
+    // Iter 15: Cache properties_list at construction instead of calling it on
+    // every fetch trigger. properties_list() runs a switch statement on every
+    // call; caching it here costs nothing and saves CPU on busy flows.
+    const _propKeys = config.prop_type === 'Friendly'
+      ? MIIOpropsVocabulary.properties_list(node.MIdevice.model)
+      : null;
+
+    function convertObj(DataAsIS) {
+      if (!_propKeys) return DataAsIS;
+      const out = {};
+      for (const k of Object.keys(DataAsIS)) {
+        const fk = _propKeys[k];
+        out[(fk && fk !== '') ? fk : k] = DataAsIS[k];
+      }
+      return out;
+    }
+
     node.on('input', async function(msg, send, done) {
       send = send || function() { node.send.apply(node, arguments); };
+      done = done || function() {};
 
       setStatus('blue', 'dot', 'Fetching...');
 
@@ -54,14 +70,14 @@ module.exports = function(RED) {
       try {
         const DataAsIS = await new Promise((resolve, reject) => {
           timeoutHandle = setTimeout(
-            () => reject(new Error(`Device ${node.MIdevice.address} did not respond within ${FETCH_TIMEOUT_MS / 1000}s`)),
+            () => reject(new Error('Device ' + node.MIdevice.address + ' did not respond within ' + (FETCH_TIMEOUT_MS / 1000) + 's')),
             FETCH_TIMEOUT_MS,
           );
 
-          // refresh: 0  →  poll() skips setInterval.
-          // This device object is short-lived (created per request and destroyed
-          // right after), so the library's internal polling interval would be
-          // created and immediately cleared — wasted work on every trigger.
+          // refresh: 0 → poll() skips setInterval.
+          // This device object is short-lived (created per trigger, destroyed
+          // immediately after), so the library's internal polling interval
+          // would be created and immediately cleared — wasted work.
           device = mihome.device({
             id:      node.MIdevice.MI_id,
             model:   node.MIdevice.model,
@@ -70,12 +86,27 @@ module.exports = function(RED) {
             refresh: 0,
           });
 
-          device.once('properties', (data) => {
+          // Iter R4: Use named listener refs so each removes the other when it
+          // fires, preventing stale once() listeners from holding closure refs
+          // to resolve/reject/timeoutHandle after the promise settles.
+          // Iter R5: Also clean up both listeners in the device.init().catch()
+          // error path so no stale listener remains in any settlement branch.
+          function onUnavailable(reason) {
+            device.removeListener('properties', onProperties);
+            clearTimeout(timeoutHandle);
+            reject(new Error('Device unavailable: ' + (reason || 'connection failed')));
+          }
+          function onProperties(data) {
+            device.removeListener('unavailable', onUnavailable);
             clearTimeout(timeoutHandle);
             resolve(data);
-          });
+          }
+          device.once('unavailable', onUnavailable);
+          device.once('properties',  onProperties);
 
           device.init().catch((err) => {
+            device.removeListener('unavailable', onUnavailable);
+            device.removeListener('properties',  onProperties);
             clearTimeout(timeoutHandle);
             reject(err);
           });
@@ -86,7 +117,7 @@ module.exports = function(RED) {
 
         setStatus('green', 'dot', 'Online', 3000);
         send([Object.assign({}, baseMsg, { reachable: true, payload: convertObj(DataAsIS) }), null]);
-        if (done) done();
+        done();
 
       } catch (error) {
         // ── Offline / timeout ─────────────────────────────────────────────────
@@ -95,20 +126,9 @@ module.exports = function(RED) {
 
         setStatus('red', 'ring', 'Offline', 5000);
         send([null, Object.assign({}, baseMsg, { reachable: false, error: error.message, payload: {} })]);
-        if (done) done();
+        done();
       }
     });
-
-    function convertObj(DataAsIS) {
-      if (node.config.prop_type !== 'Friendly') return DataAsIS;
-      const keys = MIIOpropsVocabulary.properties_list(node.MIdevice.model);
-      const out  = {};
-      for (const k of Object.keys(DataAsIS)) {
-        const fk = keys[k];
-        out[(fk && fk !== '') ? fk : k] = DataAsIS[k];
-      }
-      return out;
-    }
   }
 
   RED.nodes.registerType('MIIOfetchdata', MIIOfetchdataNode);
